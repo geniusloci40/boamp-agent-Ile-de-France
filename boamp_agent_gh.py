@@ -7,97 +7,131 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from anthropic import Anthropic
 
-def fetch_boamp_notices():
-    """Scarica annunci BOAMP API per architettura, ultimi 3 giorni, Île-de-France"""
-    
-    # Codici postali Île-de-France (75, 77, 78, 91, 92, 93, 94, 95)
-    idf_postcodes = ["75", "77", "78", "91", "92", "93", "94", "95"]
-    
-    # CPV architettura: 71220000, 71221000
-    cpv_codes = ["71220000", "71221000"]
-    
-    base_url = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records"
-    
-    all_notices = []
-    
-    for cpv in cpv_codes:
-        # Ultimi 3 giorni
-        three_days_ago = (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ")
-        
-        # Query per CPV e data
-        where_clause = f"cpv_code LIKE '{cpv}%' AND publication_date >= '{three_days_ago}'"
-        
-        params = {
-            "where": where_clause,
-            "order_by": "publication_date DESC",
-            "limit": 100
-        }
-        
-        try:
-            response = requests.get(base_url, params=params, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            
-            # Filtra per codici postali Île-de-France
-            for record in data.get("results", []):
-                postal_code = record.get("postal_code", "")[:2]
-                if postal_code in idf_postcodes:
-                    all_notices.append(record)
-        
-        except requests.exceptions.RequestException as e:
-            print(f"Errore nella richiesta BOAMP: {e}")
-    
-    return all_notices
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
 
-def evaluate_with_claude(notices):
-    """Passa gli annunci a Claude per valutazione pertinenza"""
-    
-    if not notices:
+CPV_CODES = ["71220000", "71221000"]
+IDF_DEPT = ["75", "77", "78", "91", "92", "93", "94", "95"]
+BOAMP_API = "https://www.boamp.fr/api/explore/v2.1/catalog/datasets/boamp/records"
+
+def fetch_tenders():
+    yesterday = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    cpv_filter = " OR ".join([f'cpv LIKE "{c[:4]}"' for c in CPV_CODES])
+    params = {
+        "where": f"({cpv_filter}) AND dateparution >= \"{yesterday}\"",
+        "limit": 50,
+        "select": "id,titre,dateparution,cpv,objet,nomacheteur,lieuexecution",
+        "order_by": "dateparution DESC",
+    }
+    try:
+        resp = requests.get(BOAMP_API, params=params, timeout=30)
+        resp.raise_for_status()
+        return resp.json().get("results", [])
+    except Exception as e:
+        print(f"[ERRORE] Fetch BOAMP: {e}")
         return []
-    
+
+def filter_idf(tenders):
+    result = []
+    for t in tenders:
+        lieu = (t.get("lieuexecution") or "").lower()
+        if any(d in lieu for d in IDF_DEPT) or any(n in lieu for n in ["paris","seine","essonne","yvelines","val-de-marne","hauts-de-seine","val-d'oise","seine-et-marne"]):
+            result.append(t)
+    return result if result else tenders
+
+def assess_relevance(tenders):
+    if not tenders:
+        return []
     client = Anthropic()
-    
-    # Prepara il testo degli annunci
-    notices_text = ""
-    for i, notice in enumerate(notices, 1):
-        notices_text += f"""
-Annuncio {i}:
-- Titolo: {notice.get('title', 'N/A')}
-- Ente: {notice.get('contracting_body', 'N/A')}
-- CPV: {notice.get('cpv_code', 'N/A')}
-- Descrizione: {notice.get('object', 'N/A')[:300]}
-- Data pubblicazione: {notice.get('publication_date', 'N/A')}
-- Link: {notice.get('notice_url', 'N/A')}
-"""
-    
-    prompt = f"""Sei un esperto di appalti pubblici francesi per architettura.
+    batch = [{"id": t.get("id",""), "titre": t.get("titre",""), "objet": (t.get("objet") or "")[:400], "acheteur": t.get("nomacheteur",""), "lieu": t.get("lieuexecution","")} for t in tenders]
+    prompt = f"""Sei un assistente per uno studio di architettura parigino specializzato in edifici scolastici e pubblici (scuole, asili, uffici comunali, mediateche, centri culturali, impianti sportivi) in Île-de-France.
 
-Analizza questi annunci BOAMP di Île-de-France e identifica quelli più pertinenti per uno studio di architettura interessato a progetti di progettazione/costruzione di edifici pubblici (scuole, asili, uffici, strutture scolastiche).
+Analizza questi annunci BOAMP e per ciascuno indica se è PERTINENTE o meno.
+Rispondi SOLO con un JSON array, senza testo aggiuntivo:
+[{{"id": "...", "pertinente": true/false, "motivo": "max 15 parole", "missione": "tipo missione se leggibile"}}]
 
-{notices_text}
-
-Per ogni annuncio, rispondi in JSON così:
-{{"numero": N, "pertinente": true/false, "motivo": "breve spiegazione"}}
-
-Rispondi SOLO con un array JSON, niente altro."""
-    
+Annunci:
+{json.dumps(batch, ensure_ascii=False)}"""
     try:
         response = client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=2000,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
+            model="claude-sonnet-4-20250514",
+            max_tokens=1000,
+            messages=[{"role": "user", "content": prompt}]
         )
-        
-        # Estrai la risposta
-        response_text = response.content[0].text
-        
-        # Prova a parsare JSON
-        evaluations = json.loads(response_text)
-        
-        # Filtra solo i pertinenti
-        relevant_notices = []
-        for eval_item in evaluations:
-            if eval_item.get("pertinente"):
-                numero =...
+        raw = response.content[0].text.strip().replace("```json","").replace("```","").strip()
+        assessments = json.loads(raw)
+    except Exception as e:
+        print(f"[ERRORE] Claude: {e}")
+        assessments = [{"id": t.get("id"), "pertinente": True, "motivo": "Valutazione non disponibile", "missione": "—"} for t in tenders]
+    
+    assessment_map = {a["id"]: a for a in assessments}
+    relevant = []
+    for t in tenders:
+        a = assessment_map.get(t.get("id",""), {})
+        if a.get("pertinente", False):
+            t["_motivo"] = a.get("motivo","")
+            t["_missione"] = a.get("missione","—")
+            relevant.append(t)
+    return relevant
+
+def send_email(tenders):
+    today = datetime.now().strftime("%d/%m/%Y")
+    count = len(tenders)
+    subject = f"BOAMP · {count} appalto{'i' if count!=1 else ''} rilevante{'i' if count!=1 else ''} — {today}"
+    
+    if count == 0:
+        body = "<p style='color:#666'>Nessun appalto pertinente pubblicato ieri in Île-de-France.</p>"
+    else:
+        cards = ""
+        for t in tenders:
+            url = f"https://www.boamp.fr/avis/detail/{t.get('id','')}"
+            cards += f"""<div style="border:1px solid #e0e0e0;border-radius:6px;padding:16px;margin-bottom:16px;">
+<p style="margin:0 0 4px;font-size:13px;color:#888;">{t.get('dateparution','')}</p>
+<h3 style="margin:0 0 8px;font-size:16px;"><a href="{url}" style="color:#1a1a1a;text-decoration:none;">{t.get('titre','—')}</a></h3>
+<p style="margin:0 0 6px;font-size:13px;color:#444;">
+<strong>Acheteur:</strong> {t.get('nomacheteur','—')}<br>
+<strong>Lieu:</strong> {t.get('lieuexecution','—')}<br>
+<strong>Missione:</strong> {t.get('_missione','—')}<br>
+<strong>Nota AI:</strong> {t.get('_motivo','—')}
+</p>
+<p style="font-size:13px;color:#555;">{(t.get('objet') or '')[:300]}</p>
+<a href="{url}" style="display:inline-block;margin-top:10px;font-size:12px;background:#1a1a1a;color:#fff;padding:6px 14px;border-radius:4px;text-decoration:none;">Apri su BOAMP →</a>
+</div>"""
+        body = cards
+
+    html = f"""<!DOCTYPE html><html><body style="font-family:-apple-system,sans-serif;max-width:680px;margin:0 auto;padding:24px;">
+<h2 style="font-size:18px;margin-bottom:4px;">Digest appalti architettura</h2>
+<p style="font-size:13px;color:#888;margin:0 0 24px;">Île-de-France · {today} · {count} risultato{'i' if count!=1 else ''}</p>
+{body}
+<hr style="border:none;border-top:1px solid #eee;margin-top:32px;">
+<p style="font-size:11px;color:#aaa;">Fonte: BOAMP · Filtro AI: CPV 7122xxxx + Claude</p>
+</body></html>"""
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = EMAIL_SENDER
+        msg["To"] = EMAIL_RECIPIENT
+        msg.attach(MIMEText(html, "html", "utf-8"))
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            server.sendmail(EMAIL_SENDER, EMAIL_RECIPIENT, msg.as_string())
+        print(f"[OK] Email inviata a {EMAIL_RECIPIENT}")
+    except Exception as e:
+        print(f"[ERRORE] Email: {e}")
+
+def main():
+    today = datetime.now().strftime("%d/%m/%Y")
+    print(f"[{today}] Avvio ricerca BOAMP...")
+    raw = fetch_tenders()
+    print(f"  → {len(raw)} annunci trovati")
+    idf = filter_idf(raw)
+    print(f"  → {len(idf)} in Île-de-France")
+    relevant = assess_relevance(idf)
+    print(f"  → {len(relevant)} pertinenti")
+    send_email(relevant)
+
+if __name__ == "__main__":
+    main()
