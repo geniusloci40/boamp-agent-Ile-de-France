@@ -16,22 +16,29 @@ IDF_DEPT = ["75", "77", "78", "91", "92", "93", "94", "95", "60"]
 
 def fetch_tenders():
     three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
-    params = {
-        "q": "architecture maîtrise d'oeuvre",
-        "refine": 'nature_categorise_libelle:"Avis de marché"',
-        "where": f'dateparution >= "{three_days_ago}"',
-        "limit": 100,
-        "select": "idweb,titre,dateparution,objet,nomacheteur,lieuexecution,code_departement,donnees",
-        "order_by": "dateparution DESC",
-        "lang": "fr",
-        "timezone": "Europe/Paris",
-    }
+    
+    base = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/exports/json"
+    
+    params = [
+        ("lang", "fr"),
+        ("refine", 'nature_categorise_libelle:"Avis de marché"'),
+        ("q", "maitrise oeuvre architecture"),
+        ("where", f'dateparution >= "{three_days_ago}"'),
+        ("limit", "100"),
+        ("timezone", "Europe/Paris"),
+    ]
+    
     try:
-        resp = requests.get(BOAMP_API, params=params, timeout=30)
+        resp = requests.get(base, params=params, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        print(f"  → API response: {data.get('total_count', 0)} totali")
-        return data.get("results", [])
+        # exports/json restituisce una lista diretta, non un dict con results
+        if isinstance(data, list):
+            print(f"  → API response: {len(data)} totali")
+            return data
+        else:
+            print(f"  → API response: {data.get('total_count', 0)} totali")
+            return data.get("results", [])
     except Exception as e:
         print(f"[ERRORE] Fetch BOAMP: {e}")
         return []
