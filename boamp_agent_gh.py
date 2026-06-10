@@ -57,7 +57,7 @@ Annunci:
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1000,
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.content[0].text.strip().replace("```json","").replace("```","").strip()
