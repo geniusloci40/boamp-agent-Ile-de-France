@@ -22,9 +22,10 @@ def fetch_tenders():
     three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
     params = {
         "where": f"dateparution >= \"{three_days_ago}\"",
-        "refine": "famille_cpv:71",
+        "refine": "nature_categorise_libelle:Avis de marché",
+        "q": "maîtrise d'oeuvre architecture",
         "limit": 100,
-        "select": "id,titre,dateparution,cpv,objet,nomacheteur,lieuexecution",
+        "select": "id,titre,dateparution,objet,nomacheteur,lieuexecution,code_departement",
         "order_by": "dateparution DESC",
     }
     try:
