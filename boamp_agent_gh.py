@@ -3,7 +3,7 @@ import requests
 import json
 import smtplib
 import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from anthropic import Anthropic
@@ -19,7 +19,7 @@ SEARCH_KEYWORD = "maîtrise d'oeuvre"
 BOAMP_API = "https://www.boamp.fr/api/explore/v2.1/catalog/datasets/boamp/records"
 
 def fetch_tenders():
-    three_days_ago = (datetime.now(datetime.timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
     params = {
         "where": f"dateparution >= \"{three_days_ago}\"",
         "refine": "famille_cpv:71",
