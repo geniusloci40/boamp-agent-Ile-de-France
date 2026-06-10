@@ -16,7 +16,7 @@ EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
 CPV_CODES = ["71220000", "71221000", "71240000"]
 IDF_DEPT = ["75", "77", "78", "91", "92", "93", "94", "95", "60"]
 SEARCH_KEYWORD = "maîtrise d'oeuvre"
-BOAMP_API = "https://www.boamp.fr/api/explore/v2.1/catalog/datasets/boamp/records"
+BOAMP_API = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/records"
 
 def fetch_tenders():
     three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
