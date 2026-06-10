@@ -45,20 +45,31 @@ def filter_idf(tenders):
 def assess_relevance(tenders):
     if not tenders:
         return []
+    
+    # Se non c'è la chiave Anthropic, restituisce tutti gli annunci senza filtro
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("[INFO] ANTHROPIC_API_KEY non trovata — filtro AI disabilitato, invio tutti gli annunci")
+        for t in tenders:
+            t["_motivo"] = "Filtro AI non attivo"
+            t["_missione"] = "—"
+        return tenders
+    
     client = Anthropic()
     batch = [{"id": t.get("id",""), "titre": t.get("titre",""), "objet": (t.get("objet") or "")[:400], "acheteur": t.get("nomacheteur",""), "lieu": t.get("lieuexecution","")} for t in tenders]
-    prompt = f"""Sei un assistente per uno studio di architettura parigino specializzato in edifici scolastici e pubblici (scuole, asili, uffici comunali, mediateche, centri culturali, impianti sportivi) in Île-de-France.
+    prompt = f"""Sei un assistente per uno studio di architettura indipendente francese.
+Stai cercando appalti pubblici con missione di maîtrise d'oeuvre (MOE) su tutto il territorio francese.
+Sono pertinenti: concorsi di progettazione, incarichi MOE completi, MOE parziali, missioni di conception.
+Non sono pertinenti: forniture, lavori senza progettazione, AMO pura, études sans maîtrise d'oeuvre.
 
-Analizza questi annunci BOAMP e per ciascuno indica se è PERTINENTE o meno.
-Rispondi SOLO con un JSON array, senza testo aggiuntivo:
-[{{"id": "...", "pertinente": true/false, "motivo": "max 15 parole", "missione": "tipo missione se leggibile"}}]
+Rispondi SOLO con un JSON array:
+[{{"id": "...", "pertinente": true/false, "motivo": "max 15 parole", "missione": "tipo missione"}}]
 
 Annunci:
 {json.dumps(batch, ensure_ascii=False)}"""
     try:
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=2000,
+            max_tokens=1000,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.content[0].text.strip().replace("```json","").replace("```","").strip()
@@ -66,7 +77,7 @@ Annunci:
     except Exception as e:
         print(f"[ERRORE] Claude: {e}")
         assessments = [{"id": t.get("id"), "pertinente": True, "motivo": "Valutazione non disponibile", "missione": "—"} for t in tenders]
-    
+
     assessment_map = {a["id"]: a for a in assessments}
     relevant = []
     for t in tenders:
