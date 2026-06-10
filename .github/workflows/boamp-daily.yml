@@ -2,7 +2,7 @@ name: BOAMP Daily Agent
 
 on:
   schedule:
-    - cron: '1 1 * * *'
+    - cron: '1 2 * * *'
   workflow_dispatch:
 
 env:
