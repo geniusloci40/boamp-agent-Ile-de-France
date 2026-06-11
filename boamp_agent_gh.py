@@ -12,16 +12,27 @@ EMAIL_SENDER = os.getenv("EMAIL_SENDER")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 EMAIL_RECIPIENT = os.getenv("EMAIL_RECIPIENT")
 
+# Codici dipartimento Île-de-France
 IDF_DEPT = ["75", "77", "78", "91", "92", "93", "94", "95"]
+IDF_NAMES = ["paris", "seine-et-marne", "yvelines", "essonne", "hauts-de-seine",
+             "seine-saint-denis", "val-de-marne", "val-d'oise", "seine"]
+
 BOAMP_BASE = "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/exports/json"
 
 def fetch_tenders():
     three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
+    # Query specifica per architettura edifici pubblici IDF
+    # Filtro geografico direttamente nella query BOAMP
+    idf_where = (
+        f'dateparution >= "{three_days_ago}" AND ('
+        + " OR ".join([f'code_departement = "{d}"' for d in IDF_DEPT])
+        + ")"
+    )
     params = [
         ("lang", "fr"),
         ("refine", 'nature_categorise_libelle:"Avis de marché"'),
-        ("q", "maitrise oeuvre architecture"),
-        ("where", f'dateparution >= "{three_days_ago}"'),
+        ("q", "architecture conception bâtiment"),
+        ("where", idf_where),
         ("limit", "100"),
         ("timezone", "Europe/Paris"),
     ]
@@ -30,25 +41,21 @@ def fetch_tenders():
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list):
-            print(f"  → API response: {len(data)} totali", flush=True)
+            print(f"  → API response: {len(data)} totali IDF", flush=True)
             return data
         else:
-            print(f"  → API response: {data.get('total_count', 0)} totali", flush=True)
+            print(f"  → API response: {data.get('total_count', 0)} totali IDF", flush=True)
             return data.get("results", [])
     except Exception as e:
         print(f"[ERRORE] Fetch BOAMP: {e}", flush=True)
         return []
 
-def filter_idf(tenders):
-    result = []
-    for t in tenders:
-        dept = (t.get("code_departement") or "")
-        lieu = (t.get("lieuexecution") or "").lower()
-        if dept in IDF_DEPT:
-            result.append(t)
-        elif any(n in lieu for n in ["paris", "seine", "essonne", "yvelines", "val-de-marne", "hauts-de-seine", "val-d'oise", "seine-et-marne"]):
-            result.append(t)
-    return result if result else tenders
+def is_idf(t):
+    dept = (t.get("code_departement") or "").strip()
+    if dept in IDF_DEPT:
+        return True
+    lieu = (t.get("lieuexecution") or "").lower()
+    return any(n in lieu for n in IDF_NAMES)
 
 def assess_relevance(tenders):
     if not tenders:
@@ -68,30 +75,33 @@ def assess_relevance(tenders):
             "titre": t.get("titre", ""),
             "objet": (t.get("objet") or "")[:400],
             "acheteur": t.get("nomacheteur", ""),
-            "lieu": t.get("lieuexecution") or t.get("code_departement", "")
+            "lieu": t.get("lieuexecution") or t.get("code_departement", ""),
         }
         for t in tenders
     ]
-    prompt = f"""Sei un assistente per uno studio di architettura parigino specializzato in edifici scolastici e pubblici (scuole, asili, uffici comunali, mediateche, centri culturali, impianti sportivi) in Île-de-France.
-Sono pertinenti: concorsi di progettazione, incarichi MOE completi, MOE parziali, missioni di conception.
-Non sono pertinenti: forniture, lavori senza progettazione, AMO pura, études sans maîtrise d'oeuvre.
+    prompt = f"""Sei un assistente per uno studio di architettura parigino.
+Cerchi appalti pubblici in Île-de-France per progettazione di edifici scolastici e pubblici:
+scuole, asili, collège, lycée, mairie, médiathèque, centre culturel, gymnase, équipement public.
+Missioni pertinenti: MOE completa, conception, concours de maîtrise d'oeuvre.
+Non pertinenti: forniture, travaux sans conception, AMO, études techniques sans MOE.
 
-Rispondi SOLO con un JSON array, senza testo aggiuntivo:
-[{{"id": "...", "pertinente": true/false, "motivo": "max 15 parole", "missione": "tipo missione"}}]
+Rispondi SOLO con JSON array, nessun testo aggiuntivo:
+[{{"id":"...","pertinente":true/false,"motivo":"max 12 parole","missione":"tipo missione"}}]
 
 Annunci:
 {json.dumps(batch, ensure_ascii=False)}"""
     try:
         response = client.messages.create(
-           model="claude-sonnet-4-6",
-            max_tokens=1000,
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
             messages=[{"role": "user", "content": prompt}]
         )
         raw = response.content[0].text.strip().replace("```json", "").replace("```", "").strip()
         assessments = json.loads(raw)
     except Exception as e:
         print(f"[ERRORE] Claude: {e}", flush=True)
-        assessments = [{"id": t.get("idweb"), "pertinente": True, "motivo": "Valutazione non disponibile", "missione": "—"} for t in tenders]
+        assessments = [{"id": t.get("idweb"), "pertinente": True,
+                        "motivo": "Valutazione non disponibile", "missione": "—"} for t in tenders]
 
     assessment_map = {a["id"]: a for a in assessments}
     relevant = []
@@ -116,12 +126,12 @@ def send_email(tenders):
             url = f"https://www.boamp.fr/avis/detail/{t.get('idweb', '')}"
             lieu = t.get("lieuexecution") or t.get("code_departement", "—")
             cards += f"""<div style="border:1px solid #e0e0e0;border-radius:6px;padding:16px;margin-bottom:16px;">
-<p style="margin:0 0 4px;font-size:13px;color:#888;">{t.get('dateparution', '')} · {lieu}</p>
-<h3 style="margin:0 0 8px;font-size:16px;"><a href="{url}" style="color:#1a1a1a;text-decoration:none;">{t.get('titre', '—')}</a></h3>
+<p style="margin:0 0 4px;font-size:13px;color:#888;">{t.get('dateparution','')} · {lieu}</p>
+<h3 style="margin:0 0 8px;font-size:16px;"><a href="{url}" style="color:#1a1a1a;text-decoration:none;">{t.get('titre','—')}</a></h3>
 <p style="margin:0 0 6px;font-size:13px;color:#444;">
-<strong>Acheteur:</strong> {t.get('nomacheteur', '—')}<br>
-<strong>Missione:</strong> {t.get('_missione', '—')}<br>
-<strong>Nota AI:</strong> {t.get('_motivo', '—')}
+<strong>Acheteur:</strong> {t.get('nomacheteur','—')}<br>
+<strong>Missione:</strong> {t.get('_missione','—')}<br>
+<strong>Nota AI:</strong> {t.get('_motivo','—')}
 </p>
 <p style="font-size:13px;color:#555;">{(t.get('objet') or '')[:300]}</p>
 <a href="{url}" style="display:inline-block;margin-top:10px;font-size:12px;background:#1a1a1a;color:#fff;padding:6px 14px;border-radius:4px;text-decoration:none;">Apri su BOAMP →</a>
@@ -133,7 +143,7 @@ def send_email(tenders):
 <p style="font-size:13px;color:#888;margin:0 0 24px;">Île-de-France · {today} · {count} risultato{'i' if count != 1 else ''}</p>
 {body}
 <hr style="border:none;border-top:1px solid #eee;margin-top:32px;">
-<p style="font-size:11px;color:#aaa;">Fonte: BOAMP · Keyword: architecture maîtrise d'oeuvre · Filtro AI: Claude</p>
+<p style="font-size:11px;color:#aaa;">Fonte: BOAMP · Zona: Île-de-France · Filtro AI: Claude</p>
 </body></html>"""
 
     try:
@@ -151,13 +161,14 @@ def send_email(tenders):
 
 def main():
     print(f"Python {sys.version}", flush=True)
-    print("Script avviato", flush=True)
+    print("Script avviato — BOAMP IDF", flush=True)
     today = datetime.now().strftime("%d/%m/%Y")
     print(f"[{today}] Avvio ricerca BOAMP IDF...", flush=True)
     raw = fetch_tenders()
-    print(f"  → {len(raw)} annunci trovati", flush=True)
-    idf = filter_idf(raw)
-    print(f"  → {len(idf)} in Île-de-France", flush=True)
+    print(f"  → {len(raw)} annunci trovati in IDF", flush=True)
+    # Doppio filtro: API + controllo su lieuexecution
+    idf = [t for t in raw if is_idf(t)] or raw
+    print(f"  → {len(idf)} dopo filtro IDF", flush=True)
     relevant = assess_relevance(idf)
     print(f"  → {len(relevant)} pertinenti", flush=True)
     send_email(relevant)
