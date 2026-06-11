@@ -51,7 +51,12 @@ def fetch_tenders():
         return []
 
 def is_idf(t):
-    dept = (t.get("code_departement") or "").strip()
+    dept_raw = t.get("code_departement") or ""
+    # Gestisce sia stringa che lista
+    if isinstance(dept_raw, list):
+        dept = dept_raw[0].strip() if dept_raw else ""
+    else:
+        dept = dept_raw.strip()
     if dept in IDF_DEPT:
         return True
     lieu = (t.get("lieuexecution") or "").lower()
